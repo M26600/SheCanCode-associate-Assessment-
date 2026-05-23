@@ -40,9 +40,11 @@ public class PaymentService {
         public static ProcessingResult fresh(PaymentResponse r) {
             return new ProcessingResult(r, 201, false, false, null);
         }
+
         public static ProcessingResult cached(PaymentResponse r, int originalStatus) {
             return new ProcessingResult(r, originalStatus, true, false, null);
         }
+
         public static ProcessingResult conflict(String msg) {
             return new ProcessingResult(null, 409, false, true, msg);
         }
@@ -126,4 +128,4 @@ public class PaymentService {
 
         return doProcess(record, record.getOriginalRequest(), key);
     }
-}s
+}
