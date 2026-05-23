@@ -12,46 +12,50 @@ When a customer clicks **"Pay"**, the request is sent but the network lags. The 
 ---
 
 ## 🏗️ Architecture Diagram
-Client (e-commerce shop)
-│
-▼
-┌─────────────────────────────────────┐
-│         PaymentController           │
-│  • Validate Idempotency-Key header  │
-│  • Validate request body            │
-│  • Set X-Cache-Hit: true on replay  │
-└──────────────────┬──────────────────┘
-│
-▼
-┌─────────────────────────────────────┐
-│           PaymentService            │
-│                                     │
-│  🆕 New key?                        │
-│     → Mark IN_FLIGHT                │
-│     → Process (2s delay)            │
-│     → Mark COMPLETE + cache result  │
-│     → Return 201 Created            │
-│                                     │
-│  ✅ Same key + same body?           │
-│     → Return cached response        │
-│     → X-Cache-Hit: true             │
-│                                     │
-│  ❌ Same key + different body?      │
-│     → Return 409 Conflict           │
-│                                     │
-│  ⏳ Same key still processing?      │
-│     → Block and wait                │
-│     → Return same result            │
-└──────────────────┬──────────────────┘
-│
-▼
-┌─────────────────────────────────────┐
-│          IdempotencyStore           │
-│  • ConcurrentHashMap (thread-safe)  │
-│  • TTL expiry per key (24 hours)    │
-│  • Auto-eviction every 10 minutes   │
-└─────────────────────────────────────┘
 
+```text
+       [ Client (e-commerce shop) ]
+                    │
+                    ▼
+┌───────────────────────────────────────┐
+│           PaymentController           │
+├───────────────────────────────────────┤
+│ • Validate Idempotency-Key header     │
+│ • Validate request body payload       │
+│ • Inject X-Cache-Hit: true on replay  │
+└───────────────────┬───────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────┐
+│            PaymentService             │
+├───────────────────────────────────────┤
+│ 🆕 New key?                           │
+│    └─► State = IN_FLIGHT              │
+│    └─► Process payload (2s delay)     │
+│    └─► State = COMPLETE + cache value │
+│    └─► Return 201 Created             │
+│                                       │
+│ ✅ Same key + identical body?         │
+│    └─► Short-circuit to cached value  │
+│    └─► Return X-Cache-Hit: true       │
+│                                       │
+│ ❌ Same key + different body?         │
+│    └─► Abort ──► Return 409 Conflict  │
+│                                       │
+│ ⏳ Same key + state is IN_FLIGHT?     │
+│    └─► Block thread & await resolution│
+│    └─► Return identical execution result│
+└───────────────────┬───────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────┐
+│           IdempotencyStore            │
+├───────────────────────────────────────┤
+│ • ConcurrentHashMap (Thread-safe)     │
+│ • 24-Hour Time-To-Live (TTL) expiry   │
+│ • Automated eviction sweep (Every 10m)│
+└───────────────────────────────────────┘
+```
 ---
 
 ## ⚙️ Setup Instructions
@@ -196,6 +200,7 @@ idempotency.ttl-hours=24
 ---
 
 ## 📁 Project Structure
+``` text
 src/main/java/com/igirepay/
 ├── IdempotencyGatewayApplication.java
 ├── controller/
@@ -209,7 +214,7 @@ src/main/java/com/igirepay/
 │   └── IdempotencyRecord.java
 └── config/
 └── GlobalExceptionHandler.java
-
+```
 ---
 
 ## ✅ User Stories Implemented
