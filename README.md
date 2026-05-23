@@ -1,230 +1,223 @@
-# IgirePay Idempotency Gateway — The "Pay-Once" Protocol
+markdown# 🏦 IgirePay Idempotency Gateway
+### The "Pay-Once" Protocol
 
-A production-ready REST API that ensures every payment is charged **exactly once**,
-no matter how many times the client retries.
+> A production-ready REST API that guarantees every payment is charged **exactly once** — no matter how many times the client retries.
 
 ---
 
-## Architecture Diagram
+## 🚨 The Problem This Solves
+
+When a customer clicks **"Pay"**, the request is sent but the network lags. The client retries. Without an idempotency layer, **the customer gets charged twice**. This API prevents that entirely.
+
+---
+
+## 🏗️ Architecture Diagram
 Client (e-commerce shop)
-|
-|  POST /process-payment
-|  Idempotency-Key: <uuid>
-|  { "amount": 100, "currency": "RWF" }
-v
-+------------------------------------------+
-|           PaymentController              |
-|  1. Validate header and body             |
-|  2. Delegate to PaymentService           |
-|  3. Set X-Cache-Hit: true on replays     |
-+------------------+-----------------------+
-|
-v
-+------------------------------------------+
-|            PaymentService                |
-|                                          |
-|  Key not in store?                       |
-|  -> Mark IN_FLIGHT                       |
-|  -> Simulate 2s processing               |
-|  -> Mark COMPLETE                        |
-|  -> Return 201 Created                   |
-|                                          |
-|  Key found, body matches, COMPLETE?      |
-|  -> Return cached response               |
-|  -> X-Cache-Hit: true                    |
-|                                          |
-|  Key found, body DIFFERS?                |
-|  -> Return 409 Conflict                  |
-|                                          |
-|  Key found, IN_FLIGHT? (race condition)  |
-|  -> Block until COMPLETE                 |
-|  -> Return same result                   |
-+------------------+-----------------------+
-|
-v
-+------------------------------------------+
-|         IdempotencyStore                 |
-|  ConcurrentHashMap<String, Record>       |
-|  Atomic compute() for thread safety      |
-|  TTL expiry on every key                 |
-|  Auto-eviction every 10 minutes          |
-+------------------------------------------+
-
-Key State Machine:
-(absent/expired) -> IN_FLIGHT -> COMPLETE
-                        |
-                [concurrent duplicate]
-                        |
-                   block and wait
-                        |
-                   returns same result
+│
+▼
+┌─────────────────────────────────────┐
+│         PaymentController           │
+│  • Validate Idempotency-Key header  │
+│  • Validate request body            │
+│  • Set X-Cache-Hit: true on replay  │
+└──────────────────┬──────────────────┘
+│
+▼
+┌─────────────────────────────────────┐
+│           PaymentService            │
+│                                     │
+│  🆕 New key?                        │
+│     → Mark IN_FLIGHT                │
+│     → Process (2s delay)            │
+│     → Mark COMPLETE + cache result  │
+│     → Return 201 Created            │
+│                                     │
+│  ✅ Same key + same body?           │
+│     → Return cached response        │
+│     → X-Cache-Hit: true             │
+│                                     │
+│  ❌ Same key + different body?      │
+│     → Return 409 Conflict           │
+│                                     │
+│  ⏳ Same key still processing?      │
+│     → Block and wait                │
+│     → Return same result            │
+└──────────────────┬──────────────────┘
+│
+▼
+┌─────────────────────────────────────┐
+│          IdempotencyStore           │
+│  • ConcurrentHashMap (thread-safe)  │
+│  • TTL expiry per key (24 hours)    │
+│  • Auto-eviction every 10 minutes   │
+└─────────────────────────────────────┘
 
 ---
 
-## Setup Instructions
+## ⚙️ Setup Instructions
 
 ### Prerequisites
 - Java 17+
 - Maven 3.8+
 
 ### Run the server
-
+```bash
 git clone https://github.com/M26600/SheCanCode-associate-Assessment-.git
 cd SheCanCode-associate-Assessment-
 mvn spring-boot:run
-
-Server starts on http://localhost:8080
+```
+Server starts on **http://localhost:8080**
 
 ### Run tests
-
+```bash
 mvn test
+```
 
 ---
 
-## API Documentation
+## 📡 API Documentation
 
-### POST /process-payment
+### `POST /process-payment`
 
-Process a payment. Safe to retry — guaranteed to charge exactly once.
-
-#### Required Header
-
-| Header | Description |
+| | |
 |---|---|
-| Idempotency-Key | Unique string (UUID recommended). Max 255 chars. |
+| **URL** | `/process-payment` |
+| **Method** | `POST` |
+| **Required Header** | `Idempotency-Key: <unique-string>` |
 
 #### Request Body
-
+```json
 {
   "amount": 100,
   "currency": "RWF"
 }
+```
 
 ---
 
-#### Response — First Request
-
+### ✅ Response — First Request
 HTTP 201 Created
-
+```json
 {
   "status": "SUCCESS",
   "message": "Charged 100 RWF",
   "transactionId": "TXN-A1B2C3D4",
-  "idempotencyKey": "your-unique-key",
+  "idempotencyKey": "order-abc-123",
   "processedAt": "2025-06-01T10:00:02Z"
 }
+```
 
 ---
 
-#### Response — Duplicate Request (same key and same body)
-
+### 🔁 Response — Duplicate Request
 HTTP 201 Created
 X-Cache-Hit: true
-
+```json
 {
   "status": "SUCCESS",
   "message": "Charged 100 RWF",
   "transactionId": "TXN-A1B2C3D4",
-  "idempotencyKey": "your-unique-key",
+  "idempotencyKey": "order-abc-123",
   "processedAt": "2025-06-01T10:00:02Z"
 }
+```
+> Same `transactionId` — customer was NOT charged again ✅
 
 ---
 
-#### Response — Key Reused With Different Body
-
+### ❌ Response — Key Reused With Different Body
 HTTP 409 Conflict
-
+```json
 {
   "error": "Idempotency key already used for a different request body."
 }
+```
 
 ---
 
-#### Response — Missing Header
+### 🧪 Example curl Commands
 
-HTTP 400 Bad Request
-
-{
-  "error": "Missing required header: Idempotency-Key"
-}
-
----
-
-### Example curl Commands
-
-First request:
+**First payment:**
+```bash
 curl -X POST http://localhost:8080/process-payment \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: order-abc-123" \
   -d '{"amount": 100, "currency": "RWF"}'
+```
 
-Safe retry:
+**Safe retry (same key):**
+```bash
 curl -X POST http://localhost:8080/process-payment \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: order-abc-123" \
   -d '{"amount": 100, "currency": "RWF"}'
+```
 
-Fraud attempt:
+**Fraud attempt (same key, different amount):**
+```bash
 curl -X POST http://localhost:8080/process-payment \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: order-abc-123" \
   -d '{"amount": 500, "currency": "RWF"}'
+```
 
 ---
 
-## Design Decisions
+## 🧠 Design Decisions
 
-### 1. ConcurrentHashMap + compute() for atomicity
-The store uses ConcurrentHashMap.compute() which is atomic per key. Two simultaneous
-first-requests for the same key cannot both win the slot. No external lock needed.
+### 1. `ConcurrentHashMap` + `compute()` for atomicity
+Guarantees that two simultaneous first-requests for the same key cannot both win the slot. No external lock needed — the JDK handles it atomically.
 
-### 2. Object.wait() and notifyAll() for race conditions
-When a duplicate arrives while the first request is still processing, the thread
-blocks with synchronized wait(). When the first thread finishes it calls notifyAll()
-waking all waiters. A 30-second timeout prevents deadlock.
+### 2. `Object.wait()` / `notifyAll()` for race conditions
+When a duplicate arrives while the first request is still processing, the thread blocks using `synchronized wait()`. When the first thread finishes it calls `notifyAll()`, waking all waiters immediately. A 30-second timeout prevents deadlock.
 
 ### 3. Body equality by value
-Request body equality is checked with equals() on PaymentRequest comparing
-amount and currency exactly. This prevents fraud where someone tries to change
-the payment amount using an existing key.
+Uses `equals()` on `PaymentRequest` to compare `amount` and `currency` exactly. Prevents fraud where someone tries to change the payment amount using an existing key.
 
 ### 4. No external dependencies
-Only JDK and Spring Boot. No Redis, no database. Run with a single command.
+Only JDK + Spring Boot. No Redis, no database required. Start with a single command. For multi-instance deployment, swap `IdempotencyStore` for a Redis-backed implementation — the service layer stays unchanged.
 
 ---
 
-## Developer's Choice: Key Expiry (TTL)
+## 💡 Developer's Choice: Key Expiry (TTL)
 
 ### What it does
-Every idempotency key has a 24-hour time-to-live configurable via
-idempotency.ttl-hours in application.properties. After expiry the key
-is released and a new payment can be made with the same key string.
-A background task purges expired records every 10 minutes.
+Every idempotency key has a **24-hour TTL** (configurable via `idempotency.ttl-hours`). After expiry the key is released and a new payment can be processed with the same key. A background scheduler purges expired records every 10 minutes.
 
 ### Why it matters for Fintech
-Without TTL, a client reusing key strings across billing periods would be
-permanently blocked. A 24-hour window covers all reasonable retry storms
-but releases keys for new billing cycles. It also prevents unbounded
-memory growth in long-running services.
+Without TTL, a client reusing key strings across billing periods would be permanently blocked — the next month's charge would silently replay last month's cached response. A 24-hour window covers all reasonable retry storms while releasing keys for new billing cycles. It also prevents **unbounded memory growth** in long-running services.
 
-### How to configure
+### Configuration
+```properties
+# application.properties
 idempotency.ttl-hours=24
+```
 
 ---
 
-## Project Structure
-
+## 📁 Project Structure
 src/main/java/com/igirepay/
-|- IdempotencyGatewayApplication.java
-|- controller/
-|  |- PaymentController.java
-|- service/
-|  |- PaymentService.java
-|  |- IdempotencyStore.java
-|- model/
-|  |- PaymentRequest.java
-|  |- PaymentResponse.java
-|  |- IdempotencyRecord.java
-|- config/
-   |- GlobalExceptionHandler.java
+├── IdempotencyGatewayApplication.java
+├── controller/
+│   └── PaymentController.java
+├── service/
+│   ├── PaymentService.java
+│   └── IdempotencyStore.java
+├── model/
+│   ├── PaymentRequest.java
+│   ├── PaymentResponse.java
+│   └── IdempotencyRecord.java
+└── config/
+└── GlobalExceptionHandler.java
+
+---
+
+## ✅ User Stories Implemented
+
+| Story | Description | Status |
+|---|---|---|
+| User Story 1 | First payment processed successfully | ✅ |
+| User Story 2 | Duplicate returns cached response + X-Cache-Hit | ✅ |
+| User Story 3 | Different body with same key returns 409 | ✅ |
+| Bonus | Race condition handled with blocking wait | ✅ |
+| Developer's Choice | 24-hour TTL with auto-eviction | ✅ |
